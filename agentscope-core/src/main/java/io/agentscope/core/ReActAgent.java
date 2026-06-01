@@ -1161,6 +1161,11 @@ public class ReActAgent extends StructuredOutputCapableAgent {
             return Mono.error(new AgentShuttingDownException());
         }
 
+        // Patch orphaned tool_use blocks before adding recovery message.
+        // When interrupted during reasoning, the partial ASSISTANT with tool_use
+        // may have been saved to memory but tool execution never ran.
+        patchOrphanedToolUseBlocks();
+
         String recoveryText = "I noticed that you have interrupted me. What can I do for you?";
 
         Msg recoveryMsg =
@@ -1172,6 +1177,42 @@ public class ReActAgent extends StructuredOutputCapableAgent {
 
         memory.addMessage(recoveryMsg);
         return Mono.just(recoveryMsg);
+    }
+
+    /**
+     * Scan memory for any ASSISTANT messages with ToolUseBlock that have no corresponding
+     * ToolResultBlock, and inject synthetic error results. This prevents invalid message
+     * sequences being sent to the LLM API.
+     */
+    private void patchOrphanedToolUseBlocks() {
+        List<Msg> messages = memory.getMessages();
+
+        Set<String> existingResultIds =
+                messages.stream()
+                        .flatMap(m -> m.getContentBlocks(ToolResultBlock.class).stream())
+                        .map(ToolResultBlock::getId)
+                        .collect(Collectors.toSet());
+
+        List<ToolUseBlock> orphanedToolCalls =
+                messages.stream()
+                        .filter(m -> m.getRole() == MsgRole.ASSISTANT)
+                        .flatMap(m -> m.getContentBlocks(ToolUseBlock.class).stream())
+                        .filter(toolUse -> !existingResultIds.contains(toolUse.getId()))
+                        .toList();
+
+        for (ToolUseBlock toolCall : orphanedToolCalls) {
+            ToolResultBlock errorResult =
+                    buildErrorToolResult(
+                            toolCall.getId(),
+                            "Tool execution was interrupted by user. Tool: " + toolCall.getName());
+            Msg toolResultMsg =
+                    ToolResultMessageBuilder.buildToolResultMsg(errorResult, toolCall, getName());
+            memory.addMessage(toolResultMsg);
+            log.info(
+                    "Patched orphaned tool_use during interrupt: {} ({})",
+                    toolCall.getName(),
+                    toolCall.getId());
+        }
     }
 
     @Override
