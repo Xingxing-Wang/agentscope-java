@@ -132,27 +132,15 @@ public class PendingToolRecoveryHook implements Hook {
     }
 
     /**
-     * Find tool call IDs from the last assistant message that have no corresponding
-     * {@link ToolResultBlock} in memory.
+     * Find tool call IDs from ALL assistant messages that have no corresponding
+     * {@link ToolResultBlock} in memory. Scans the entire history to catch orphaned
+     * tool calls in non-last assistant messages (e.g., after user interrupt).
      *
      * @param memory the agent's memory
      * @return set of pending tool use IDs, empty if none
      */
     private Set<String> findPendingToolUseIds(Memory memory) {
         List<Msg> messages = memory.getMessages();
-
-        // Find last assistant message
-        Msg lastAssistant = null;
-        for (int i = messages.size() - 1; i >= 0; i--) {
-            if (messages.get(i).getRole() == MsgRole.ASSISTANT) {
-                lastAssistant = messages.get(i);
-                break;
-            }
-        }
-
-        if (lastAssistant == null || !lastAssistant.hasContentBlocks(ToolUseBlock.class)) {
-            return Set.of();
-        }
 
         // Collect all existing tool result IDs in memory
         Set<String> existingResultIds =
@@ -161,8 +149,10 @@ public class PendingToolRecoveryHook implements Hook {
                         .map(ToolResultBlock::getId)
                         .collect(Collectors.toSet());
 
-        // Return tool call IDs that have no result yet
-        return lastAssistant.getContentBlocks(ToolUseBlock.class).stream()
+        // Scan ALL assistant messages for orphaned tool_use blocks
+        return messages.stream()
+                .filter(m -> m.getRole() == MsgRole.ASSISTANT)
+                .flatMap(m -> m.getContentBlocks(ToolUseBlock.class).stream())
                 .map(ToolUseBlock::getId)
                 .filter(id -> !existingResultIds.contains(id))
                 .collect(Collectors.toSet());
@@ -170,7 +160,8 @@ public class PendingToolRecoveryHook implements Hook {
 
     /**
      * Generate error {@link ToolResultBlock}s for each pending tool call and add them
-     * to memory as TOOL-role messages.
+     * to memory as TOOL-role messages. Scans ALL assistant messages to find orphaned
+     * tool calls (not just the last one).
      *
      * @param agent the ReActAgent instance
      * @param memory the agent's memory
@@ -179,20 +170,10 @@ public class PendingToolRecoveryHook implements Hook {
     private void patchPendingToolCalls(ReActAgent agent, Memory memory, Set<String> pendingIds) {
         List<Msg> messages = memory.getMessages();
 
-        // Find last assistant message to get ToolUseBlock details
-        Msg lastAssistant = null;
-        for (int i = messages.size() - 1; i >= 0; i--) {
-            if (messages.get(i).getRole() == MsgRole.ASSISTANT) {
-                lastAssistant = messages.get(i);
-                break;
-            }
-        }
-        if (lastAssistant == null) {
-            return;
-        }
-
         List<ToolUseBlock> pendingToolCalls =
-                lastAssistant.getContentBlocks(ToolUseBlock.class).stream()
+                messages.stream()
+                        .filter(m -> m.getRole() == MsgRole.ASSISTANT)
+                        .flatMap(m -> m.getContentBlocks(ToolUseBlock.class).stream())
                         .filter(toolUse -> pendingIds.contains(toolUse.getId()))
                         .toList();
 
