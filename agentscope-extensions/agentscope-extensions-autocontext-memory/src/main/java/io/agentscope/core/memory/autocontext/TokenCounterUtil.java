@@ -40,19 +40,12 @@ import java.util.Map;
  */
 public class TokenCounterUtil {
 
-    // Token estimation ratios
-    // For English: ~1 token per 4 characters
-    // For Chinese: ~1 token per 1-2 characters
-    // Using a conservative ratio that works for mixed content
     private static final double CHARS_PER_TOKEN = 2.5;
 
-    // Overhead tokens for message structure (role, name, formatting)
     private static final int MESSAGE_OVERHEAD = 5;
 
-    // Overhead tokens for tool call structure
     private static final int TOOL_CALL_OVERHEAD = 10;
 
-    // Overhead tokens for tool result structure
     private static final int TOOL_RESULT_OVERHEAD = 8;
 
     /**
@@ -203,10 +196,7 @@ public class TokenCounterUtil {
     }
 
     /**
-     * Estimates tokens for text content.
-     *
-     * <p>Uses a character-based approximation that works reasonably well
-     * for both English and Chinese text.
+     * Estimates tokens for text content using character-based approximation.
      *
      * @param text the text to estimate
      * @return estimated number of tokens
@@ -216,9 +206,7 @@ public class TokenCounterUtil {
             return 0;
         }
 
-        // Count characters and apply ratio
-        int charCount = text.length();
-        return (int) Math.ceil(charCount / CHARS_PER_TOKEN);
+        return (int) Math.ceil(text.length() / CHARS_PER_TOKEN);
     }
 
     /**

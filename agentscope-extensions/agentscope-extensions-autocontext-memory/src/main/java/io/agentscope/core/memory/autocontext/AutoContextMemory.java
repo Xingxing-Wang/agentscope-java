@@ -133,6 +133,14 @@ public class AutoContextMemory implements StateModule, Memory, ContextOffLoader 
     private final PromptConfig customPrompt;
 
     /**
+     * Actual input token count reported by the LLM API in the most recent call.
+     * Used as a precise baseline for compression threshold checks, since character-based
+     * estimation can significantly undercount for Chinese text and tool definitions.
+     * Value 0 means no API response has been received yet (fall back to estimation).
+     */
+    private volatile int lastActualInputTokens = 0;
+
+    /**
      * Creates a new AutoContextMemory instance with the specified configuration and model.
      *
      * @param autoContextConfig the configuration for auto context management
@@ -152,6 +160,13 @@ public class AutoContextMemory implements StateModule, Memory, ContextOffLoader 
     public void addMessage(Msg message) {
         workingMemoryStorage.add(message);
         originalMemoryStorage.add(message);
+
+        if (message.getRole() == MsgRole.ASSISTANT && message.getChatUsage() != null) {
+            int inputTokens = message.getChatUsage().getInputTokens();
+            if (inputTokens > 0) {
+                lastActualInputTokens = inputTokens;
+            }
+        }
     }
 
     @Override
@@ -187,9 +202,10 @@ public class AutoContextMemory implements StateModule, Memory, ContextOffLoader 
 
         // Check if compression is needed
         boolean msgCountReached = currentContextMessages.size() >= autoContextConfig.msgThreshold;
-        int calculateToken = TokenCounterUtil.calculateToken(currentContextMessages);
+        int estimatedTokens = TokenCounterUtil.calculateToken(currentContextMessages);
+        int tokenCount = Math.max(estimatedTokens, lastActualInputTokens);
         int thresholdToken = (int) (autoContextConfig.maxToken * autoContextConfig.tokenRatio);
-        boolean tokenCounterReached = calculateToken >= thresholdToken;
+        boolean tokenCounterReached = tokenCount >= thresholdToken;
 
         if (!msgCountReached && !tokenCounterReached) {
             return false;
@@ -197,11 +213,14 @@ public class AutoContextMemory implements StateModule, Memory, ContextOffLoader 
 
         // Compression triggered - log threshold information
         log.info(
-                "Compression triggered - msgCount: {}/{}, tokenCount: {}/{}",
+                "Compression triggered - msgCount: {}/{}, tokenCount: {}/{}"
+                        + " (estimated={}, lastActual={})",
                 currentContextMessages.size(),
                 autoContextConfig.msgThreshold,
-                calculateToken,
-                thresholdToken);
+                tokenCount,
+                thresholdToken,
+                estimatedTokens,
+                lastActualInputTokens);
 
         // Strategy 1: Compress previous round tool invocations
         log.info("Strategy 1: Checking for previous round tool invocations to compress");
@@ -314,6 +333,7 @@ public class AutoContextMemory implements StateModule, Memory, ContextOffLoader 
         for (Msg msg : newMessages) {
             workingMemoryStorage.add(msg);
         }
+        lastActualInputTokens = 0;
         return new ArrayList<>(workingMemoryStorage);
     }
 
@@ -635,12 +655,19 @@ public class AutoContextMemory implements StateModule, Memory, ContextOffLoader 
         ReasoningContext context = new ReasoningContext("large_message_summary");
 
         // Build the message to send for compression
+        // NOTE: When the original message has role=TOOL (e.g. ToolResultBlock), the extracted
+        // text is rebuilt as a pure TextBlock message. Preserving role=TOOL would produce an
+        // invalid message sequence (USER → TOOL → USER) for DashScope, which requires a
+        // preceding ASSISTANT message with matching tool_calls for any TOOL role message.
+        // This causes DashScope 400: "Can only get item pairs from a mapping."
+        // Fix: use ASSISTANT role for the reconstructed text-only message so the sequence
+        // becomes USER → ASSISTANT → USER, which is valid for all LLM providers.
         Msg messageForCompression = message;
         String textForCompression = extractTextForCompression(message, hasToolUse, hasToolResult);
         if (textForCompression != null && !textForCompression.isEmpty()) {
             messageForCompression =
                     Msg.builder()
-                            .role(message.getRole())
+                            .role(MsgRole.ASSISTANT)
                             .name(message.getName())
                             .content(TextBlock.builder().text(textForCompression).build())
                             .build();
