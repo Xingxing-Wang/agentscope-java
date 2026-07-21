@@ -34,6 +34,7 @@ import io.agentscope.core.plan.model.SubTaskState;
 import io.agentscope.core.session.Session;
 import io.agentscope.core.state.SessionKey;
 import io.agentscope.core.state.StateModule;
+import io.agentscope.core.util.JsonUtils;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -655,15 +656,17 @@ public class AutoContextMemory implements StateModule, Memory, ContextOffLoader 
         ReasoningContext context = new ReasoningContext("large_message_summary");
 
         // Build the message to send for compression
-        // NOTE: When the original message has role=TOOL (e.g. ToolResultBlock), the extracted
-        // text is rebuilt as a pure TextBlock message. Preserving role=TOOL would produce an
-        // invalid message sequence (USER → TOOL → USER) for DashScope, which requires a
-        // preceding ASSISTANT message with matching tool_calls for any TOOL role message.
-        // This causes DashScope 400: "Can only get item pairs from a mapping."
-        // Fix: use ASSISTANT role for the reconstructed text-only message so the sequence
-        // becomes USER → ASSISTANT → USER, which is valid for all LLM providers.
+        // NOTE: A tool-carrying message must never be sent as-is between the two USER prompts:
+        // role=TOOL without a preceding ASSISTANT tool_call, or an ASSISTANT ToolUseBlock
+        // without its tool response, both produce an invalid sequence for DashScope, causing
+        // 400: "Can only get item pairs from a mapping." Such messages are always rebuilt as
+        // ASSISTANT text-only messages (USER → ASSISTANT → USER), valid for all providers.
         Msg messageForCompression = message;
         String textForCompression = extractTextForCompression(message, hasToolUse, hasToolResult);
+        if ((textForCompression == null || textForCompression.isEmpty())
+                && (hasToolUse || hasToolResult || message.getRole() == MsgRole.TOOL)) {
+            textForCompression = describeToolStructure(message);
+        }
         if (textForCompression != null && !textForCompression.isEmpty()) {
             messageForCompression =
                     Msg.builder()
@@ -743,7 +746,18 @@ public class AutoContextMemory implements StateModule, Memory, ContextOffLoader 
             Msg message, boolean hasToolUse, boolean hasToolResult) {
         if (hasToolUse) {
             // Extract only top-level TextBlock content to avoid triggering model's tool detection
-            return message.getTextContent();
+            String text = message.getTextContent();
+            if (text != null && !text.isEmpty()) {
+                return text;
+            }
+            // No TextBlock (e.g. reasoning followed by a pure tool call): summarize the tool
+            // invocation itself, since the payload typically lives in the input arguments
+            // (large scripts, embedded documents).
+            return message.getContent().stream()
+                    .filter(ToolUseBlock.class::isInstance)
+                    .map(ToolUseBlock.class::cast)
+                    .map(AutoContextMemory::serializeToolUseAsText)
+                    .collect(Collectors.joining("\n"));
         }
         if (hasToolResult) {
             // Extract text from ToolResultBlock's output since Msg.getTextContent() only
@@ -760,6 +774,45 @@ public class AutoContextMemory implements StateModule, Memory, ContextOffLoader 
         return null;
     }
 
+    /** Serialize a ToolUseBlock as plain text (tool name and input arguments) for summarization. */
+    private static String serializeToolUseAsText(ToolUseBlock toolUse) {
+        StringBuilder sb = new StringBuilder("Tool call: ").append(toolUse.getName());
+        if (toolUse.getInput() != null && !toolUse.getInput().isEmpty()) {
+            String inputJson;
+            try {
+                inputJson = JsonUtils.getJsonCodec().toJson(toolUse.getInput());
+            } catch (Exception e) {
+                inputJson = String.valueOf(toolUse.getInput());
+            }
+            sb.append("\nInput:\n").append(inputJson);
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Build a short structural description of a tool-carrying message, used as summarization
+     * input when no text content can be extracted from it.
+     */
+    private String describeToolStructure(Msg message) {
+        List<String> toolNames =
+                message.getContent().stream()
+                        .map(
+                                block -> {
+                                    if (block instanceof ToolUseBlock) {
+                                        return ((ToolUseBlock) block).getName();
+                                    }
+                                    if (block instanceof ToolResultBlock) {
+                                        return ((ToolResultBlock) block).getName();
+                                    }
+                                    return null;
+                                })
+                        .filter(name -> name != null)
+                        .collect(Collectors.toList());
+        return "[Tool interaction message"
+                + (toolNames.isEmpty() ? "" : ": " + String.join(", ", toolNames))
+                + "; no text content available to summarize]";
+    }
+
     /**
      * Build content blocks that preserve ToolUseBlock structure while replacing TextBlock with
      * compressed summary.
@@ -770,7 +823,7 @@ public class AutoContextMemory implements StateModule, Memory, ContextOffLoader 
 
         for (ContentBlock originalBlock : message.getContent()) {
             if (originalBlock instanceof ToolUseBlock) {
-                blocks.add(originalBlock);
+                blocks.add(stubOversizedToolInput((ToolUseBlock) originalBlock));
             } else if (originalBlock instanceof TextBlock) {
                 if (!hasTextBlock) {
                     blocks.add(TextBlock.builder().text(summaryText).build());
@@ -786,6 +839,40 @@ public class AutoContextMemory implements StateModule, Memory, ContextOffLoader 
             blocks.add(0, TextBlock.builder().text(summaryText).build());
         }
         return blocks;
+    }
+
+    /**
+     * Replace oversized tool input arguments with a small placeholder. The compressed message
+     * stays in the working context, so keeping multi-KB arguments (embedded scripts, HTML
+     * documents) would defeat the compression. The original message remains in offload storage.
+     */
+    private ContentBlock stubOversizedToolInput(ToolUseBlock toolUse) {
+        if (toolUse.getInput() == null || toolUse.getInput().isEmpty()) {
+            return toolUse;
+        }
+        String inputJson;
+        try {
+            inputJson = JsonUtils.getJsonCodec().toJson(toolUse.getInput());
+        } catch (Exception e) {
+            return toolUse;
+        }
+        if (inputJson.length() <= autoContextConfig.largePayloadThreshold) {
+            return toolUse;
+        }
+        Map<String, Object> stub = new HashMap<>();
+        stub.put(
+                "_compressed_tool_input",
+                "Original input ("
+                        + inputJson.length()
+                        + " chars) removed during context compression;"
+                        + " original message is in offload storage.");
+        return ToolUseBlock.builder()
+                .id(toolUse.getId())
+                .name(toolUse.getName())
+                .input(stub)
+                .content(toolUse.getContent())
+                .metadata(toolUse.getMetadata())
+                .build();
     }
 
     /**

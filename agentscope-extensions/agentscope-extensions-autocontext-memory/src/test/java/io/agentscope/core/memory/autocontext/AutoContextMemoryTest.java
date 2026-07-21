@@ -392,6 +392,96 @@ class AutoContextMemoryTest {
     }
 
     @Test
+    @DisplayName(
+            "Should summarize large tool-call-only message without sending tool blocks to model")
+    void testLargeToolUseOnlyMessageCompression() {
+        // Regression: an ASSISTANT message with a large ToolUseBlock but no TextBlock used to be
+        // passed through as-is into the summarization request, producing a dangling tool_call
+        // between two USER messages (DashScope 400 "Can only get item pairs from a mapping.").
+        TestModel capturingModel = new TestModel("Compressed script summary");
+        AutoContextConfig config =
+                AutoContextConfig.builder()
+                        .msgThreshold(4)
+                        .largePayloadThreshold(100)
+                        .lastKeep(10)
+                        .minCompressionTokenThreshold(0)
+                        .build();
+        AutoContextMemory toolMemory = new AutoContextMemory(config, capturingModel);
+
+        toolMemory.addMessage(createTextMessage("Generate two HTML reports", MsgRole.USER));
+
+        // Pure tool call: no TextBlock, large script in the input arguments
+        Map<String, Object> input = new HashMap<>();
+        input.put("code", "x".repeat(3000));
+        toolMemory.addMessage(
+                Msg.builder()
+                        .role(MsgRole.ASSISTANT)
+                        .name("assistant")
+                        .content(
+                                ToolUseBlock.builder()
+                                        .name("executePython")
+                                        .id("call_1")
+                                        .input(input)
+                                        .build())
+                        .build());
+
+        toolMemory.addMessage(createToolResultMessage("executePython", "call_1", "OK"));
+        toolMemory.addMessage(createTextMessage("Reports written", MsgRole.ASSISTANT));
+
+        boolean compressed = toolMemory.compressIfNeeded();
+        assertTrue(compressed, "Compression should be triggered");
+
+        // Exactly one summarization call (strategy 5), shaped [USER, ASSISTANT, USER]
+        assertEquals(1, capturingModel.getCallCount(), "Should call model once for summary");
+        List<Msg> request = capturingModel.getCapturedRequests().get(0);
+        assertEquals(3, request.size(), "Summary request should have 3 messages");
+
+        Msg middle = request.get(1);
+        assertEquals(MsgRole.ASSISTANT, middle.getRole(), "Middle message must be ASSISTANT");
+        assertFalse(
+                middle.hasContentBlocks(ToolUseBlock.class),
+                "Middle message must not carry ToolUseBlock (dangling tool_call)");
+        assertFalse(
+                middle.hasContentBlocks(ToolResultBlock.class),
+                "Middle message must not carry ToolResultBlock");
+        String middleText = middle.getTextContent();
+        assertNotNull(middleText, "Middle message should contain extracted tool call text");
+        assertTrue(
+                middleText.contains("executePython"),
+                "Serialized tool call should be part of the summary input");
+        assertTrue(
+                middleText.contains("xxx"),
+                "Tool input arguments should be part of the summary input");
+
+        // The compressed message keeps the tool call but with the oversized input stubbed out
+        List<Msg> messages = toolMemory.getMessages();
+        Msg compressedMsg =
+                messages.stream()
+                        .filter(
+                                m ->
+                                        m.getMetadata() != null
+                                                && m.getMetadata().containsKey("_compress_meta"))
+                        .findFirst()
+                        .orElseThrow(() -> new AssertionError("Compressed message not found"));
+        ToolUseBlock compressedToolUse =
+                compressedMsg.getContent().stream()
+                        .filter(ToolUseBlock.class::isInstance)
+                        .map(ToolUseBlock.class::cast)
+                        .findFirst()
+                        .orElseThrow(() -> new AssertionError("ToolUseBlock not preserved"));
+        assertEquals("executePython", compressedToolUse.getName(), "Tool name must be preserved");
+        assertEquals("call_1", compressedToolUse.getId(), "Tool call id must be preserved");
+        assertTrue(
+                compressedToolUse.getInput().containsKey("_compressed_tool_input"),
+                "Oversized tool input should be replaced by a stub");
+
+        // Original message remains intact in offload storage
+        assertFalse(
+                toolMemory.getOffloadContext().isEmpty(),
+                "Original message should be offloaded before compression");
+    }
+
+    @Test
     @DisplayName("Should handle large payload offloading")
     void testLargePayloadOffloading() {
         TestModel largePayloadTestModel = new TestModel("Summary");
@@ -1091,6 +1181,7 @@ class AutoContextMemoryTest {
     private static class TestModel implements Model {
         private final String responseText;
         private int callCount = 0;
+        private final List<List<Msg>> capturedRequests = new ArrayList<>();
 
         TestModel(String responseText) {
             this.responseText = responseText;
@@ -1100,6 +1191,7 @@ class AutoContextMemoryTest {
         public Flux<ChatResponse> stream(
                 List<Msg> messages, List<ToolSchema> tools, GenerateOptions options) {
             callCount++;
+            capturedRequests.add(new ArrayList<>(messages));
             ChatResponse response =
                     ChatResponse.builder()
                             .content(List.of(TextBlock.builder().text(responseText).build()))
@@ -1115,6 +1207,10 @@ class AutoContextMemoryTest {
 
         int getCallCount() {
             return callCount;
+        }
+
+        List<List<Msg>> getCapturedRequests() {
+            return capturedRequests;
         }
 
         void reset() {
