@@ -1919,6 +1919,10 @@ public class ReActAgent extends StructuredOutputCapableAgent {
                         public <T extends HookEvent> Mono<T> onEvent(T event) {
                             if (event instanceof PreReasoningEvent) {
                                 PreReasoningEvent e = (PreReasoningEvent) event;
+                                if (planNotebook.isPlanFinishedHintSuppressed()
+                                        && hasGenuineNewUserMessage(e.getInputMessages())) {
+                                    planNotebook.clearPlanFinishedHintSuppression();
+                                }
                                 return planNotebook
                                         .getCurrentHint()
                                         .map(
@@ -1936,6 +1940,26 @@ public class ReActAgent extends StructuredOutputCapableAgent {
                     };
 
             hooks.add(planHintHook);
+        }
+
+        /**
+         * Detects whether the tail of the input messages is a genuine new user message rather
+         * than an injected plan hint, which indicates a new external user turn has started.
+         *
+         * @param messages the reasoning input messages (before hint injection)
+         * @return true if the last message is a USER message without the plan-hint metadata mark
+         */
+        private static boolean hasGenuineNewUserMessage(List<Msg> messages) {
+            if (messages == null || messages.isEmpty()) {
+                return false;
+            }
+            Msg last = messages.get(messages.size() - 1);
+            if (last.getRole() != MsgRole.USER) {
+                return false;
+            }
+            Map<String, Object> metadata = last.getMetadata();
+            return metadata == null
+                    || !Boolean.TRUE.equals(metadata.get(PlanNotebook.PLAN_HINT_METADATA_KEY));
         }
 
         /**

@@ -113,12 +113,25 @@ public class PlanNotebook implements StateModule {
                     + "current task, you need to confirm with the user and call the "
                     + "'finish_plan' function.";
 
+    /**
+     * Metadata key marking a message as an injected plan hint, used to distinguish injected
+     * hints from genuine user messages.
+     */
+    public static final String PLAN_HINT_METADATA_KEY = "agentscope_plan_hint";
+
     private Plan currentPlan;
     private final PlanToHint planToHint;
     private final PlanStorage storage;
     private final Integer maxSubtasks;
     private final boolean needUserConfirm;
     private final Map<String, BiConsumer<PlanNotebook, Plan>> changeHooks;
+
+    /**
+     * Transient flag set after {@link #finishPlan} succeeds: while set and no new plan exists,
+     * {@link #getCurrentHint()} stays empty so the agent is not pushed to invent new tasks.
+     * Cleared when a genuine new user message arrives or a new plan is created. Not persisted.
+     */
+    private boolean planFinishedHintSuppressed = false;
 
     /** Key prefix for storage, allows multiple instances to coexist in the same session. */
     private String keyPrefix = "planNotebook";
@@ -327,6 +340,7 @@ public class PlanNotebook implements StateModule {
         }
 
         currentPlan = plan;
+        planFinishedHintSuppressed = false;
         return triggerPlanChangeHooks().thenReturn(message);
     }
 
@@ -858,7 +872,12 @@ public class PlanNotebook implements StateModule {
 
         return storage.addPlan(currentPlan)
                 .then(triggerPlanChangeHooks())
-                .then(Mono.fromRunnable(() -> currentPlan = null))
+                .then(
+                        Mono.fromRunnable(
+                                () -> {
+                                    currentPlan = null;
+                                    planFinishedHintSuppressed = true;
+                                }))
                 .thenReturn(message);
     }
 
@@ -951,6 +970,7 @@ public class PlanNotebook implements StateModule {
                                                 }
 
                                                 currentPlan = historicalPlan;
+                                                planFinishedHintSuppressed = false;
                                                 return triggerPlanChangeHooks().thenReturn(message);
                                             }));
                         });
@@ -968,16 +988,36 @@ public class PlanNotebook implements StateModule {
      *     applicable
      */
     public Mono<Msg> getCurrentHint() {
+        if (planFinishedHintSuppressed && currentPlan == null) {
+            return Mono.empty();
+        }
         String hintContent = planToHint.generateHint(currentPlan, this);
         if (hintContent != null && !hintContent.isEmpty()) {
             return Mono.just(
                     Msg.builder()
                             .role(MsgRole.USER)
                             .name("user")
+                            .metadata(Map.of(PLAN_HINT_METADATA_KEY, Boolean.TRUE))
                             .content(List.of(TextBlock.builder().text(hintContent).build()))
                             .build());
         }
         return Mono.empty();
+    }
+
+    /**
+     * Whether plan-hint injection is currently suppressed after a finished plan.
+     *
+     * @return true if hint injection is suppressed
+     */
+    public boolean isPlanFinishedHintSuppressed() {
+        return planFinishedHintSuppressed;
+    }
+
+    /**
+     * Clears the plan-finished hint suppression, e.g. when a genuine new user message arrives.
+     */
+    public void clearPlanFinishedHintSuppression() {
+        this.planFinishedHintSuppressed = false;
     }
 
     /**

@@ -863,4 +863,71 @@ class PlanNotebookToolTest {
         assertNull(
                 notebook.getCurrentPlan(), "currentPlan should be null after finishPlan completes");
     }
+
+    // ==================== Plan-Finished Hint Suppression Tests ====================
+
+    @Test
+    void testFinishPlanSuppressesNoPlanHint() {
+        List<SubTask> subtasks = List.of(new SubTask("Task1", "Desc1", "Outcome1"));
+        notebook.createPlanWithSubTasks("Plan", "Desc", "Outcome", subtasks).block();
+
+        notebook.finishPlan("done", "All done").block();
+
+        assertTrue(notebook.isPlanFinishedHintSuppressed());
+        assertNull(
+                notebook.getCurrentHint().block(),
+                "No hint should be injected after finish_plan completes");
+    }
+
+    @Test
+    void testAbandonPlanAlsoSuppressesHint() {
+        List<SubTask> subtasks = List.of(new SubTask("Task1", "Desc1", "Outcome1"));
+        notebook.createPlanWithSubTasks("Plan", "Desc", "Outcome", subtasks).block();
+
+        notebook.finishPlan("abandoned", "Not needed").block();
+
+        assertTrue(notebook.isPlanFinishedHintSuppressed());
+        assertNull(notebook.getCurrentHint().block());
+    }
+
+    @Test
+    void testClearSuppressionRestoresNoPlanHint() {
+        List<SubTask> subtasks = List.of(new SubTask("Task1", "Desc1", "Outcome1"));
+        notebook.createPlanWithSubTasks("Plan", "Desc", "Outcome", subtasks).block();
+        notebook.finishPlan("done", "All done").block();
+        assertNull(notebook.getCurrentHint().block());
+
+        notebook.clearPlanFinishedHintSuppression();
+
+        assertFalse(notebook.isPlanFinishedHintSuppressed());
+        Msg hint = notebook.getCurrentHint().block();
+        assertNotNull(hint, "NO_PLAN hint should be injected again after suppression is cleared");
+        assertTrue(hint.getTextContent().contains("create_plan"));
+    }
+
+    @Test
+    void testCreatePlanClearsSuppression() {
+        List<SubTask> subtasks = List.of(new SubTask("Task1", "Desc1", "Outcome1"));
+        notebook.createPlanWithSubTasks("Plan", "Desc", "Outcome", subtasks).block();
+        notebook.finishPlan("done", "All done").block();
+        assertTrue(notebook.isPlanFinishedHintSuppressed());
+
+        notebook.createPlanWithSubTasks("Plan 2", "Desc", "Outcome", subtasks).block();
+
+        assertFalse(notebook.isPlanFinishedHintSuppressed());
+        Msg hint = notebook.getCurrentHint().block();
+        assertNotNull(hint, "Execution hints must not be suppressed for the new plan");
+    }
+
+    @Test
+    void testHintMessageCarriesPlanHintMetadata() {
+        Msg hint = notebook.getCurrentHint().block();
+
+        assertNotNull(hint);
+        assertNotNull(hint.getMetadata());
+        assertEquals(
+                Boolean.TRUE,
+                hint.getMetadata().get(PlanNotebook.PLAN_HINT_METADATA_KEY),
+                "Injected hint should carry the plan-hint metadata mark");
+    }
 }

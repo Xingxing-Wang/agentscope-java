@@ -51,6 +51,19 @@ class DefaultPlanToHintTest {
     }
 
     @Test
+    void testNoPlanHintContainsAntiFabricationClause() {
+        String hint = hintGenerator.generateHint(null);
+
+        assertNotNull(hint);
+        assertTrue(
+                hint.contains("do NOT invent or assume new user requests or new tasks"),
+                "NO_PLAN hint must forbid inventing user requests when none is pending");
+        assertTrue(
+                hint.contains("directly summarize and deliver the final answer"),
+                "NO_PLAN hint must direct the agent to deliver the final answer");
+    }
+
+    @Test
     void testAtTheBeginningHint() {
         Plan plan =
                 createPlan(

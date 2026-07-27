@@ -16,6 +16,7 @@
 package io.agentscope.core.plan;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -116,6 +117,28 @@ class PlanNotebookStateModuleTest {
             assertEquals(
                     "IN_PROGRESS",
                     loadedNotebook.getCurrentPlan().getSubtasks().get(0).getState().name());
+        }
+
+        @Test
+        @DisplayName("Should not persist plan-finished hint suppression")
+        void testSuppressionFlagNotPersisted() {
+            PlanNotebook notebook = PlanNotebook.builder().build();
+            notebook.createPlanWithSubTasks(
+                            "Plan", "Desc", "Outcome", List.of(new SubTask("T", "D", "O")))
+                    .block();
+            notebook.finishPlan("done", "Done").block();
+            assertTrue(notebook.isPlanFinishedHintSuppressed());
+            notebook.saveTo(session, sessionKey);
+
+            PlanNotebook loaded = PlanNotebook.builder().build();
+            loaded.loadFrom(session, sessionKey);
+
+            assertFalse(
+                    loaded.isPlanFinishedHintSuppressed(),
+                    "Suppression flag is transient and must not survive save/load");
+            assertNotNull(
+                    loaded.getCurrentHint().block(),
+                    "NO_PLAN hint should be injectable again after restore");
         }
     }
 

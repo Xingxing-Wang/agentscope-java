@@ -78,7 +78,11 @@ public class DefaultPlanToHint implements PlanToHint {
                     + " a long chain of steps to complete (e.g. conduct research on a certain topic"
                     + " from different sources), you NEED to create a plan first by calling"
                     + " 'create_plan'. Otherwise, you can directly execute the user's query without"
-                    + " planning.\n";
+                    + " planning.\n"
+                    + "If there is no pending new user request (e.g. right after a plan was"
+                    + " finished), do NOT invent or assume new user requests or new tasks;"
+                    + " instead, directly summarize and deliver the final answer for the work"
+                    + " already completed.\n";
 
     private static final String AT_THE_BEGINNING =
             "The current plan:\n"

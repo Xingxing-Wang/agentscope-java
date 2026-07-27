@@ -43,6 +43,7 @@ import io.agentscope.core.plan.model.SubTask;
 import io.agentscope.core.tool.AgentTool;
 import io.agentscope.core.tool.Toolkit;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Flux;
@@ -342,5 +343,129 @@ class ReActAgentPlanIntegrationTest {
         boolean foundCreatePlan =
                 schemas.stream().anyMatch(schema -> "create_plan".equals(schema.getName()));
         assertTrue(foundCreatePlan, "create_plan should be in tool schemas");
+    }
+
+    // ==================== Plan-Finished Hint Suppression Hook Tests ====================
+
+    @Test
+    void testHintSuppressedAfterFinishPlanUntilNewUserMessage() {
+        PlanNotebook planNotebook = PlanNotebook.builder().build();
+        planNotebook
+                .createPlanWithSubTasks(
+                        "Plan", "Desc", "Outcome", List.of(new SubTask("Task", "Desc", "Outcome")))
+                .block();
+        planNotebook.finishPlan("done", "Done").block();
+
+        ReActAgent agent =
+                ReActAgent.builder()
+                        .name("TestAgent")
+                        .model(mockModel)
+                        .memory(new InMemoryMemory())
+                        .planNotebook(planNotebook)
+                        .maxIters(1)
+                        .build();
+
+        // Mid-loop style event: tail message is ASSISTANT (no genuine new user message)
+        PreReasoningEvent midLoopEvent =
+                new PreReasoningEvent(
+                        agent,
+                        "test-model",
+                        null,
+                        List.of(
+                                Msg.builder()
+                                        .role(MsgRole.ASSISTANT)
+                                        .name("assistant")
+                                        .content(TextBlock.builder().text("intermediate").build())
+                                        .build()));
+        for (Hook hook : agent.getHooks()) {
+            midLoopEvent = (PreReasoningEvent) hook.onEvent(midLoopEvent).block();
+        }
+        assertTrue(
+                planNotebook.isPlanFinishedHintSuppressed(),
+                "Suppression must remain without a genuine new user message");
+        assertEquals(
+                0,
+                countPlanHints(midLoopEvent.getInputMessages()),
+                "No plan hint should be injected while suppressed");
+
+        // New turn style event: tail message is a genuine USER message
+        PreReasoningEvent newTurnEvent =
+                new PreReasoningEvent(
+                        agent,
+                        "test-model",
+                        null,
+                        List.of(
+                                Msg.builder()
+                                        .role(MsgRole.USER)
+                                        .name("user")
+                                        .content(TextBlock.builder().text("new request").build())
+                                        .build()));
+        for (Hook hook : agent.getHooks()) {
+            newTurnEvent = (PreReasoningEvent) hook.onEvent(newTurnEvent).block();
+        }
+        assertFalse(
+                planNotebook.isPlanFinishedHintSuppressed(),
+                "Suppression must be cleared by a genuine new user message");
+        assertTrue(
+                countPlanHints(newTurnEvent.getInputMessages()) > 0,
+                "NO_PLAN hint should be injected again for the new user turn");
+    }
+
+    @Test
+    void testPlanHintMarkedUserMessageDoesNotClearSuppression() {
+        PlanNotebook planNotebook = PlanNotebook.builder().build();
+        planNotebook
+                .createPlanWithSubTasks(
+                        "Plan", "Desc", "Outcome", List.of(new SubTask("Task", "Desc", "Outcome")))
+                .block();
+        planNotebook.finishPlan("done", "Done").block();
+
+        ReActAgent agent =
+                ReActAgent.builder()
+                        .name("TestAgent")
+                        .model(mockModel)
+                        .memory(new InMemoryMemory())
+                        .planNotebook(planNotebook)
+                        .maxIters(1)
+                        .build();
+
+        // A USER message carrying the plan-hint metadata mark is an injected hint echo,
+        // not genuine user input, and must not clear the suppression
+        PreReasoningEvent event =
+                new PreReasoningEvent(
+                        agent,
+                        "test-model",
+                        null,
+                        List.of(
+                                Msg.builder()
+                                        .role(MsgRole.USER)
+                                        .name("user")
+                                        .metadata(
+                                                Map.of(
+                                                        PlanNotebook.PLAN_HINT_METADATA_KEY,
+                                                        Boolean.TRUE))
+                                        .content(TextBlock.builder().text("hint echo").build())
+                                        .build()));
+        for (Hook hook : agent.getHooks()) {
+            event = (PreReasoningEvent) hook.onEvent(event).block();
+        }
+        assertTrue(
+                planNotebook.isPlanFinishedHintSuppressed(),
+                "A hint-marked USER message must not clear suppression");
+        assertEquals(
+                1,
+                countPlanHints(event.getInputMessages()),
+                "No additional hint should be injected while suppressed");
+    }
+
+    private static long countPlanHints(List<Msg> messages) {
+        return messages.stream()
+                .filter(
+                        m ->
+                                m.getMetadata() != null
+                                        && Boolean.TRUE.equals(
+                                                m.getMetadata()
+                                                        .get(PlanNotebook.PLAN_HINT_METADATA_KEY)))
+                .count();
     }
 }
