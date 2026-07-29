@@ -56,6 +56,7 @@ public class ReasoningContext {
     private int inputTokens = 0;
     private int outputTokens = 0;
     private double time = 0;
+    private int chunksReceived = 0;
 
     public ReasoningContext(String agentName) {
         this.agentName = agentName;
@@ -77,6 +78,7 @@ public class ReasoningContext {
      */
     public List<Msg> processChunk(ChatResponse chunk) {
         this.messageId = chunk.getId();
+        this.chunksReceived++;
 
         // Accumulate ChatUsage
         ChatUsage usage = chunk.getUsage();
@@ -286,5 +288,14 @@ public class ReasoningContext {
                     .build();
         }
         return null;
+    }
+
+    /**
+     * Get the number of model response chunks processed by this context.
+     *
+     * @return count of chunks received from the model stream
+     */
+    public int getChunksReceived() {
+        return chunksReceived;
     }
 }

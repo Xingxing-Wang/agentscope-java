@@ -243,6 +243,10 @@ public class JdkHttpTransport implements HttpTransport {
             java.net.http.HttpResponse<InputStream> response, HttpRequest request) {
         InputStream inputStream = response.body();
         if (inputStream == null) {
+            log.warn(
+                    "stream_empty_body: url={}, status={}",
+                    request.getUrl(),
+                    response.statusCode());
             return Flux.empty();
         }
 
@@ -251,13 +255,30 @@ public class JdkHttpTransport implements HttpTransport {
                 TransportConstants.STREAM_FORMAT_NDJSON.equals(
                         request.getHeaders().get(TransportConstants.STREAM_FORMAT_HEADER));
 
+        java.util.concurrent.atomic.AtomicLong eventCount =
+                new java.util.concurrent.atomic.AtomicLong();
+
         // Use Flux.using to manage resource lifecycle
         return Flux.using(
-                () ->
-                        new BufferedReader(
-                                new InputStreamReader(inputStream, StandardCharsets.UTF_8)),
-                reader -> isNdjson ? readNdJsonLines(reader) : readSseLines(reader),
-                this::closeQuietly);
+                        () ->
+                                new BufferedReader(
+                                        new InputStreamReader(inputStream, StandardCharsets.UTF_8)),
+                        reader -> isNdjson ? readNdJsonLines(reader) : readSseLines(reader),
+                        this::closeQuietly)
+                .doOnNext(data -> eventCount.incrementAndGet())
+                .doOnComplete(
+                        () -> {
+                            if (eventCount.get() == 0) {
+                                log.warn(
+                                        "stream_completed_with_zero_events: url={}, status={},"
+                                                + " contentType={}",
+                                        request.getUrl(),
+                                        response.statusCode(),
+                                        response.headers()
+                                                .firstValue("Content-Type")
+                                                .orElse(null));
+                            }
+                        });
     }
 
     private Flux<String> readSseLines(BufferedReader reader) {

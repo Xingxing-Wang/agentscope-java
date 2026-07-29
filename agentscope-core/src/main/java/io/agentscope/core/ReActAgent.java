@@ -587,7 +587,21 @@ public class ReActAgent extends StructuredOutputCapableAgent {
                                 notifyReasoningChunk(msg, context).subscribe();
                             }
                         })
-                .then(Mono.defer(() -> Mono.justOrEmpty(context.buildFinalMessage())))
+                .then(
+                        Mono.defer(
+                                () -> {
+                                    Msg finalMsg = context.buildFinalMessage();
+                                    if (finalMsg == null) {
+                                        log.warn(
+                                                "reasoning_empty_final_message: model stream"
+                                                        + " completed without usable content,"
+                                                        + " agent={}, iter={}, chunksReceived={}",
+                                                getName(),
+                                                iter,
+                                                context.getChunksReceived());
+                                    }
+                                    return Mono.justOrEmpty(finalMsg);
+                                }))
                 .onErrorResume(
                         InterruptedException.class,
                         error -> {

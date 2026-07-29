@@ -224,6 +224,8 @@ public class OkHttpTransport implements HttpTransport {
                         sink -> {
                             Response response = null;
                             BufferedReader reader = null;
+                            long eventCount = 0;
+                            long lineCount = 0;
                             try {
                                 response = client.newCall(okHttpRequest).execute();
 
@@ -244,6 +246,10 @@ public class OkHttpTransport implements HttpTransport {
 
                                 ResponseBody body = response.body();
                                 if (body == null) {
+                                    log.warn(
+                                            "stream_empty_body: url={}, status={}",
+                                            okHttpRequest.url(),
+                                            response.code());
                                     sink.complete();
                                     return;
                                 }
@@ -258,6 +264,7 @@ public class OkHttpTransport implements HttpTransport {
                                     if (sink.isCancelled()) {
                                         break;
                                     }
+                                    lineCount++;
 
                                     // Skip empty lines
                                     if (line.isEmpty()) {
@@ -266,6 +273,7 @@ public class OkHttpTransport implements HttpTransport {
 
                                     // Handle NDJSON format
                                     if (isNdjson) {
+                                        eventCount++;
                                         sink.next(line);
                                         continue;
                                     }
@@ -282,12 +290,22 @@ public class OkHttpTransport implements HttpTransport {
                                         }
 
                                         if (!data.isEmpty()) {
+                                            eventCount++;
                                             sink.next(data);
                                         }
                                     }
                                     // Skip other SSE fields (event:, id:, retry:, comments)
                                 }
 
+                                if (eventCount == 0 && !sink.isCancelled()) {
+                                    log.warn(
+                                            "stream_completed_with_zero_events: url={}, status={},"
+                                                    + " contentType={}, linesRead={}",
+                                            okHttpRequest.url(),
+                                            response.code(),
+                                            response.header("Content-Type"),
+                                            lineCount);
+                                }
                                 sink.complete();
                             } catch (IOException e) {
                                 if (!sink.isCancelled()) {
