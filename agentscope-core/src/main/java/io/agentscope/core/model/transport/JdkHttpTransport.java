@@ -274,9 +274,7 @@ public class JdkHttpTransport implements HttpTransport {
                                                 + " contentType={}",
                                         request.getUrl(),
                                         response.statusCode(),
-                                        response.headers()
-                                                .firstValue("Content-Type")
-                                                .orElse(null));
+                                        response.headers().firstValue("Content-Type").orElse(null));
                             }
                         });
     }
