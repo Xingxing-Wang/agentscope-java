@@ -36,6 +36,14 @@ public final class ToolUseBlock extends ContentBlock {
     /** Metadata key for Gemini thought signature (byte[] value). */
     public static final String METADATA_THOUGHT_SIGNATURE = "thoughtSignature";
 
+    /**
+     * Placeholder name assigned to tool calls whose function name is missing (null or blank),
+     * which occasionally happens due to model hallucination. Keeping a legal non-null name lets
+     * the call flow through the normal acting phase, where the executor returns an explicit
+     * error result so the model can correct itself on the next reasoning round.
+     */
+    public static final String INVALID_TOOL_NAME = "invalid_tool_call";
+
     private final String id;
     private final String name;
     private final Map<String, Object> input;

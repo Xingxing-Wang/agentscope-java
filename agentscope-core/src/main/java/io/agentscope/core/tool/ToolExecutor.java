@@ -182,6 +182,15 @@ class ToolExecutor {
      */
     private Mono<ToolResultBlock> executeCore(ToolCallParam param) {
         ToolUseBlock toolCall = param.getToolUseBlock();
+
+        if (ToolUseBlock.INVALID_TOOL_NAME.equals(toolCall.getName())) {
+            return Mono.just(
+                    ToolResultBlock.error(
+                            "Your previous tool call was malformed (missing function name) and"
+                                    + " was not executed. Please re-issue the tool call with a"
+                                    + " valid function name."));
+        }
+
         AgentTool tool = toolRegistry.getTool(toolCall.getName());
 
         if (tool == null) {

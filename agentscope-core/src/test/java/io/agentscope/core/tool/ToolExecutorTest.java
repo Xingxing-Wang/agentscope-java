@@ -109,6 +109,30 @@ class ToolExecutorTest {
     }
 
     @Test
+    @DisplayName("Should return explicit malformed-call error for invalid tool name placeholder")
+    void shouldReturnMalformedCallErrorForInvalidToolNamePlaceholder() {
+        ToolUseBlock invalidCall =
+                ToolUseBlock.builder()
+                        .id("call-invalid")
+                        .name(ToolUseBlock.INVALID_TOOL_NAME)
+                        .input(Map.of())
+                        .content("{}")
+                        .build();
+
+        List<ToolResultBlock> responses =
+                toolkit.callTools(List.of(invalidCall), null, null, null).block(TIMEOUT);
+
+        assertNotNull(responses, "Executor should return a response for the invalid call");
+        assertEquals(1, responses.size(), "Invalid call should yield one response");
+
+        String content = extractFirstText(responses.get(0));
+        assertNotNull(content, "Error content should be present");
+        assertTrue(
+                content.contains("missing function name"),
+                "Error should explain the call was malformed, got: " + content);
+    }
+
+    @Test
     @DisplayName("Should wrap tool errors inside executor response")
     void shouldReturnErrorWhenToolThrows() {
         Map<String, Object> errorInput = Map.of("message", "test failure");

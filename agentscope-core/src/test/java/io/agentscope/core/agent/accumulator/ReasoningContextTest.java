@@ -205,6 +205,48 @@ class ReasoningContextTest {
     }
 
     @Test
+    @DisplayName("Should rename null-name tool call to placeholder in final message")
+    void testNullNameToolCallRenamedInFinalMessage() {
+        ToolUseBlock nullNameToolUse =
+                ToolUseBlock.builder().id("call_bad").content("{\"city\":\"Beijing\"}").build();
+
+        ChatResponse chunk =
+                ChatResponse.builder().id("msg-1").content(List.of(nullNameToolUse)).build();
+        context.processChunk(chunk);
+
+        Msg finalMsg = context.buildFinalMessage();
+
+        assertNotNull(finalMsg);
+        List<ToolUseBlock> toolCalls = finalMsg.getContentBlocks(ToolUseBlock.class);
+        assertEquals(1, toolCalls.size());
+        assertEquals(ToolUseBlock.INVALID_TOOL_NAME, toolCalls.get(0).getName());
+        assertEquals("call_bad", toolCalls.get(0).getId());
+    }
+
+    @Test
+    @DisplayName("Should keep valid tool call name while renaming the null-name one")
+    void testValidToolCallKeptWhenSiblingRenamed() {
+        ToolUseBlock valid =
+                ToolUseBlock.builder()
+                        .id("call_ok")
+                        .name("weather")
+                        .content("{\"city\":\"Beijing\"}")
+                        .build();
+        ToolUseBlock nullName = ToolUseBlock.builder().id("call_bad").content("{}").build();
+
+        context.processChunk(ChatResponse.builder().id("msg-1").content(List.of(valid)).build());
+        context.processChunk(ChatResponse.builder().id("msg-1").content(List.of(nullName)).build());
+
+        Msg finalMsg = context.buildFinalMessage();
+
+        assertNotNull(finalMsg);
+        List<ToolUseBlock> toolCalls = finalMsg.getContentBlocks(ToolUseBlock.class);
+        assertEquals(2, toolCalls.size());
+        assertEquals("weather", toolCalls.get(0).getName());
+        assertEquals(ToolUseBlock.INVALID_TOOL_NAME, toolCalls.get(1).getName());
+    }
+
+    @Test
     @DisplayName("Should handle multiple parallel tool calls")
     void testMultipleParallelToolCalls() {
         // First tool call chunk

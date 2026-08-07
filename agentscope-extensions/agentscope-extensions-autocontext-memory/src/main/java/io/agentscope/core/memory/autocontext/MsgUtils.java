@@ -410,7 +410,7 @@ public class MsgUtils {
         List<ToolUseBlock> toolUseBlocks = msg.getContentBlocks(ToolUseBlock.class);
         if (toolUseBlocks != null) {
             for (ToolUseBlock toolUse : toolUseBlocks) {
-                if (toolUse != null && PLAN_RELATED_TOOLS.contains(toolUse.getName())) {
+                if (toolUse != null && isPlanRelatedTool(toolUse.getName())) {
                     return true;
                 }
             }
@@ -453,7 +453,7 @@ public class MsgUtils {
                 List<ToolUseBlock> toolUseBlocks = msg.getContentBlocks(ToolUseBlock.class);
                 if (toolUseBlocks != null) {
                     for (ToolUseBlock toolUse : toolUseBlocks) {
-                        if (toolUse != null && PLAN_RELATED_TOOLS.contains(toolUse.getName())) {
+                        if (toolUse != null && isPlanRelatedTool(toolUse.getName())) {
                             planRelatedToolCallIds.add(toolUse.getId());
                         }
                     }
@@ -472,7 +472,7 @@ public class MsgUtils {
                     // If all tool calls in this message are plan-related, exclude it
                     boolean allPlanRelated = true;
                     for (ToolUseBlock toolUse : toolUseBlocks) {
-                        if (toolUse != null && !PLAN_RELATED_TOOLS.contains(toolUse.getName())) {
+                        if (toolUse != null && !isPlanRelatedTool(toolUse.getName())) {
                             allPlanRelated = false;
                             break;
                         }

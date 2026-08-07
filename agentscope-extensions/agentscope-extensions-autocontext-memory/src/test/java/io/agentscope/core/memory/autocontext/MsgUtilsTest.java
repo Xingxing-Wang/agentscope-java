@@ -892,4 +892,26 @@ class MsgUtilsTest {
         int count = MsgUtils.calculateMessageCharCount(msg);
         assertEquals(23, count); // "First block" (11) + "Second block" (12) = 23
     }
+
+    @Test
+    @DisplayName("Should not throw and keep message when tool_use has null name")
+    void testFilterPlanRelatedToolCallsWithNullToolName() {
+        Msg nullNameToolUse = createToolUseMessage(null, "call_bad");
+        List<Msg> messages = new ArrayList<>();
+        messages.add(createTextMessage("User query", MsgRole.USER));
+        messages.add(nullNameToolUse);
+
+        List<Msg> filtered = MsgUtils.filterPlanRelatedToolCalls(messages);
+
+        assertEquals(2, filtered.size());
+        assertTrue(filtered.contains(nullNameToolUse));
+    }
+
+    @Test
+    @DisplayName("Should treat null-name tool_use as not plan-related")
+    void testContainsPlanRelatedToolCallWithNullToolName() {
+        Msg nullNameToolUse = createToolUseMessage(null, "call_bad");
+
+        assertFalse(MsgUtils.containsPlanRelatedToolCall(nullNameToolUse));
+    }
 }

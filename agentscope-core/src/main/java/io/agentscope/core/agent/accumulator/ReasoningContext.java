@@ -28,6 +28,8 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Reasoning context that manages all state and content accumulation for a single reasoning round.
@@ -42,6 +44,8 @@ import java.util.Map;
  * @hidden
  */
 public class ReasoningContext {
+
+    private static final Logger log = LoggerFactory.getLogger(ReasoningContext.class);
 
     private final String agentName;
     private String messageId;
@@ -157,9 +161,30 @@ public class ReasoningContext {
             blocks.add(textAcc.buildAggregated());
         }
 
-        // Add all tool calls
+        // Add all tool calls; sanitize any tool call whose name is still null/blank after
+        // accumulation (model hallucination). A placeholder name keeps the block legal for
+        // persistence and downstream APIs, and the acting phase will return an explicit
+        // error result so the model can re-issue the call.
         List<ToolUseBlock> toolCalls = toolCallsAcc.buildAllToolCalls();
-        blocks.addAll(toolCalls);
+        for (ToolUseBlock toolCall : toolCalls) {
+            if (toolCall.getName() == null || toolCall.getName().isBlank()) {
+                log.warn(
+                        "tool_call_missing_name: renaming to placeholder '{}', id={}, agent={}",
+                        ToolUseBlock.INVALID_TOOL_NAME,
+                        toolCall.getId(),
+                        agentName);
+                blocks.add(
+                        ToolUseBlock.builder()
+                                .id(toolCall.getId())
+                                .name(ToolUseBlock.INVALID_TOOL_NAME)
+                                .input(toolCall.getInput())
+                                .content(toolCall.getContent())
+                                .metadata(toolCall.getMetadata())
+                                .build());
+            } else {
+                blocks.add(toolCall);
+            }
+        }
 
         // If no content at all, return null
         if (blocks.isEmpty()) {
