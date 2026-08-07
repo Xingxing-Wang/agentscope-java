@@ -19,7 +19,12 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import io.agentscope.core.agent.Agent;
+import io.agentscope.core.agent.Event;
+import io.agentscope.core.agent.StreamOptions;
 import io.agentscope.core.message.ContentBlock;
+import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.message.ToolResultBlock;
 import io.agentscope.core.message.ToolUseBlock;
@@ -30,6 +35,7 @@ import java.time.Duration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -37,6 +43,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 /**
@@ -541,6 +548,88 @@ class ToolExecutorTest {
         }
     }
 
+    @Test
+    @DisplayName("Should skip remaining sequential tools once agent interrupt is pending")
+    void shouldSkipRemainingToolsAfterInterrupt() {
+        toolkit.registerTool(
+                new AgentTool() {
+                    @Override
+                    public String getName() {
+                        return "interrupting_tool";
+                    }
+
+                    @Override
+                    public String getDescription() {
+                        return "Tool that triggers an agent interrupt while running";
+                    }
+
+                    @Override
+                    public Map<String, Object> getParameters() {
+                        return Map.of("type", "object", "properties", Map.of());
+                    }
+
+                    @Override
+                    public Mono<ToolResultBlock> callAsync(ToolCallParam param) {
+                        return Mono.fromCallable(
+                                () -> {
+                                    param.getAgent().interrupt();
+                                    return ToolResultBlock.text("first done");
+                                });
+                    }
+                });
+
+        InterruptibleTestAgent agent = new InterruptibleTestAgent();
+        Map<String, Object> emptyInput = Map.of();
+        Map<String, Object> addInput = Map.of("a", 1, "b", 2);
+        ToolUseBlock first =
+                ToolUseBlock.builder()
+                        .id("call-first")
+                        .name("interrupting_tool")
+                        .input(emptyInput)
+                        .content(JsonUtils.getJsonCodec().toJson(emptyInput))
+                        .build();
+        ToolUseBlock second =
+                ToolUseBlock.builder()
+                        .id("call-second")
+                        .name("add")
+                        .input(addInput)
+                        .content(JsonUtils.getJsonCodec().toJson(addInput))
+                        .build();
+
+        List<ToolResultBlock> responses =
+                toolkit.callTools(List.of(first, second), null, agent, null).block(TIMEOUT);
+
+        assertNotNull(responses, "Executor should return responses");
+        assertEquals(2, responses.size(), "Skipped tool must still yield a result");
+        assertEquals("first done", extractFirstText(responses.get(0)));
+        assertEquals("call-second", responses.get(1).getId(), "Skipped result should keep id");
+        assertEquals("add", responses.get(1).getName(), "Skipped result should keep name");
+        assertTrue(
+                extractFirstText(responses.get(1)).contains("Tool execution skipped"),
+                "Second tool should be skipped due to pending interrupt");
+    }
+
+    @Test
+    @DisplayName("Should execute all tools when agent has no pending interrupt")
+    void shouldExecuteAllToolsWithoutPendingInterrupt() {
+        InterruptibleTestAgent agent = new InterruptibleTestAgent();
+        Map<String, Object> addInput = Map.of("a", 3, "b", 4);
+        ToolUseBlock addCall =
+                ToolUseBlock.builder()
+                        .id("call-add-guarded")
+                        .name("add")
+                        .input(addInput)
+                        .content(JsonUtils.getJsonCodec().toJson(addInput))
+                        .build();
+
+        List<ToolResultBlock> responses =
+                toolkit.callTools(List.of(addCall), null, agent, null).block(TIMEOUT);
+
+        assertNotNull(responses, "Executor should return responses");
+        assertEquals(1, responses.size(), "Tool call should be executed");
+        assertEquals("7", extractFirstText(responses.get(0)), "Guard must not alter execution");
+    }
+
     private String extractFirstText(ToolResultBlock response) {
         assertTrue(
                 ToolTestUtils.isValidToolResultBlock(response),
@@ -548,5 +637,90 @@ class ToolExecutorTest {
         List<ContentBlock> outputs = response.getOutput();
         if (outputs.isEmpty()) return "";
         return ((TextBlock) outputs.get(0)).getText();
+    }
+
+    /** Minimal Agent implementation backed by a real interrupt flag for guard tests. */
+    private static final class InterruptibleTestAgent implements Agent {
+        private final AtomicBoolean interrupted = new AtomicBoolean(false);
+
+        @Override
+        public String getAgentId() {
+            return "interruptible-test-agent";
+        }
+
+        @Override
+        public String getName() {
+            return "InterruptibleTestAgent";
+        }
+
+        @Override
+        public void interrupt() {
+            interrupted.set(true);
+        }
+
+        @Override
+        public void interrupt(Msg msg) {
+            interrupted.set(true);
+        }
+
+        @Override
+        public boolean isInterrupted() {
+            return interrupted.get();
+        }
+
+        @Override
+        public Mono<Msg> call(Msg msg) {
+            return Mono.error(new UnsupportedOperationException("not used"));
+        }
+
+        @Override
+        public Mono<Msg> call(List<Msg> msgs) {
+            return Mono.error(new UnsupportedOperationException("not used"));
+        }
+
+        @Override
+        public Mono<Msg> call(List<Msg> msgs, Class<?> structuredOutputClass) {
+            return Mono.error(new UnsupportedOperationException("not used"));
+        }
+
+        @Override
+        public Mono<Msg> call(List<Msg> msgs, JsonNode schema) {
+            return Mono.error(new UnsupportedOperationException("not used"));
+        }
+
+        @Override
+        public Flux<Event> stream(Msg msg, StreamOptions options) {
+            return Flux.error(new UnsupportedOperationException("not used"));
+        }
+
+        @Override
+        public Flux<Event> stream(List<Msg> msgs, StreamOptions options) {
+            return Flux.error(new UnsupportedOperationException("not used"));
+        }
+
+        @Override
+        public Flux<Event> stream(Msg msg, StreamOptions options, Class<?> structuredModel) {
+            return Flux.error(new UnsupportedOperationException("not used"));
+        }
+
+        @Override
+        public Flux<Event> stream(List<Msg> msgs, StreamOptions options, Class<?> structuredModel) {
+            return Flux.error(new UnsupportedOperationException("not used"));
+        }
+
+        @Override
+        public Flux<Event> stream(List<Msg> msgs, StreamOptions options, JsonNode schema) {
+            return Flux.error(new UnsupportedOperationException("not used"));
+        }
+
+        @Override
+        public Mono<Void> observe(Msg msg) {
+            return Mono.error(new UnsupportedOperationException("not used"));
+        }
+
+        @Override
+        public Mono<Void> observe(List<Msg> msgs) {
+            return Mono.error(new UnsupportedOperationException("not used"));
+        }
     }
 }

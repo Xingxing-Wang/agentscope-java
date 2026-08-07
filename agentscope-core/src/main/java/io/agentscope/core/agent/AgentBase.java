@@ -345,6 +345,16 @@ public abstract class AgentBase implements StateModule, Agent {
     }
 
     /**
+     * Check whether an interrupt has been requested for the current execution.
+     *
+     * @return true if the interrupt flag is set and not yet handled
+     */
+    @Override
+    public boolean isInterrupted() {
+        return interruptFlag.get();
+    }
+
+    /**
      * Check if the agent execution has been interrupted (reactive version).
      * Returns a Mono that completes normally if not interrupted, or errors with
      * InterruptedException if interrupted.

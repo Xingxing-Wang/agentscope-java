@@ -79,4 +79,17 @@ public interface Agent extends CallableAgent, StreamableAgent, ObservableAgent {
      * @param msg User message associated with the interruption
      */
     void interrupt(Msg msg);
+
+    /**
+     * Check whether an interrupt has been requested for the current execution.
+     *
+     * <p>Infrastructure components (e.g. batch tool execution) can use this flag to avoid
+     * starting new work once an interrupt is pending. The default implementation returns
+     * {@code false}, meaning the agent never reports a pending interrupt.
+     *
+     * @return true if an interrupt has been requested and not yet handled
+     */
+    default boolean isInterrupted() {
+        return false;
+    }
 }

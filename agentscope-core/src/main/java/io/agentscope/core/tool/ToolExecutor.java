@@ -292,12 +292,12 @@ class ToolExecutor {
 
         logger.debug("Executing {} tool calls (parallel={})", toolCalls.size(), parallel);
 
-        // Map each tool call to an execution Mono
+        // Map each tool call to an execution Mono guarded by the agent interrupt flag
         List<Mono<ToolResultBlock>> monos =
                 toolCalls.stream()
                         .map(
                                 toolCall ->
-                                        executeWithInfrastructure(
+                                        executeUnlessInterrupted(
                                                 toolCall, executionConfig, agent, agentContext))
                         .toList();
 
@@ -306,6 +306,37 @@ class ToolExecutor {
             return Flux.mergeSequential(monos).collectList();
         }
         return Flux.concat(monos).collectList();
+    }
+
+    /**
+     * Skip the tool call with a synthetic error result when the agent already has a pending
+     * interrupt at subscription time; otherwise execute it normally.
+     *
+     * <p>Sequential batches subscribe to each tool Mono only after the previous one completes,
+     * so this check makes an interrupt take effect between tools instead of after the whole
+     * batch. The synthetic result keeps the tool call id/name so tool_use/tool_result pairing
+     * in memory stays intact.
+     */
+    private Mono<ToolResultBlock> executeUnlessInterrupted(
+            ToolUseBlock toolCall,
+            ExecutionConfig executionConfig,
+            Agent agent,
+            ToolExecutionContext agentContext) {
+        return Mono.defer(
+                () -> {
+                    if (agent != null && agent.isInterrupted()) {
+                        logger.info(
+                                "Skipping tool '{}' because agent interrupt is pending",
+                                toolCall.getName());
+                        return Mono.just(
+                                ToolResultBlock.error(
+                                                "Tool execution skipped: agent execution was"
+                                                        + " interrupted before this tool started")
+                                        .withIdAndName(toolCall.getId(), toolCall.getName()));
+                    }
+                    return executeWithInfrastructure(
+                            toolCall, executionConfig, agent, agentContext);
+                });
     }
 
     /**
