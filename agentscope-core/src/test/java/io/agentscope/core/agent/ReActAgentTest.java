@@ -237,6 +237,98 @@ class ReActAgentTest {
     }
 
     @Test
+    @DisplayName("Should survive null-name tool call and feed explicit error back to model")
+    void testNullNameToolCallLoop() {
+        final int[] callCount = {0};
+
+        MockModel nullNameModel =
+                new MockModel(
+                        messages -> {
+                            int currentCall = callCount[0]++;
+                            if (currentCall == 0) {
+                                // First call: tool call with null name (streaming
+                                // accumulation glitch / model hallucination)
+                                return List.of(
+                                        ChatResponse.builder()
+                                                .content(
+                                                        List.of(
+                                                                ToolUseBlock.builder()
+                                                                        .id("call_null_name")
+                                                                        .input(new HashMap<>())
+                                                                        .content("{}")
+                                                                        .build()))
+                                                .usage(new ChatUsage(8, 15, 23))
+                                                .build());
+                            }
+                            // Second call: normal text response (finish)
+                            return List.of(
+                                    ChatResponse.builder()
+                                            .content(
+                                                    List.of(
+                                                            TextBlock.builder()
+                                                                    .text(
+                                                                            "Recovered after"
+                                                                                + " invalid tool"
+                                                                                + " call")
+                                                                    .build()))
+                                            .usage(new ChatUsage(10, 20, 30))
+                                            .build());
+                        });
+
+        agent =
+                ReActAgent.builder()
+                        .name(TestConstants.TEST_REACT_AGENT_NAME)
+                        .sysPrompt(TestConstants.DEFAULT_SYS_PROMPT)
+                        .model(nullNameModel)
+                        .toolkit(mockToolkit)
+                        .memory(memory)
+                        .build();
+
+        Msg userMsg = TestUtils.createUserMessage("User", "Trigger a broken tool call");
+
+        Msg response =
+                agent.call(userMsg).block(Duration.ofMillis(TestConstants.DEFAULT_TEST_TIMEOUT_MS));
+
+        // The loop must survive and finish with the second-round text
+        assertNotNull(response, "Response should not be null");
+        assertEquals(2, callCount[0], "Model should be called twice (error fed back)");
+
+        List<Msg> messages = agent.getMemory().getMessages();
+
+        // The persisted assistant message must carry the placeholder, never a null name
+        List<ToolUseBlock> persistedToolUses =
+                messages.stream()
+                        .filter(m -> m.getRole() == MsgRole.ASSISTANT)
+                        .flatMap(m -> m.getContentBlocks(ToolUseBlock.class).stream())
+                        .toList();
+        assertEquals(1, persistedToolUses.size(), "One tool_use should be persisted");
+        assertEquals(
+                ToolUseBlock.INVALID_TOOL_NAME,
+                persistedToolUses.get(0).getName(),
+                "Persisted tool_use should carry the placeholder name");
+        assertTrue(
+                messages.stream()
+                        .flatMap(m -> m.getContentBlocks(ToolUseBlock.class).stream())
+                        .noneMatch(t -> t.getName() == null),
+                "No null-name tool_use should remain in memory");
+
+        // The tool result must carry the explicit malformed-call feedback
+        String toolResultText =
+                messages.stream()
+                        .filter(m -> m.hasContentBlocks(ToolResultBlock.class))
+                        .flatMap(m -> m.getContentBlocks(ToolResultBlock.class).stream())
+                        .flatMap(r -> r.getOutput().stream())
+                        .filter(b -> b instanceof TextBlock)
+                        .map(b -> ((TextBlock) b).getText())
+                        .findFirst()
+                        .orElse(null);
+        assertNotNull(toolResultText, "Tool result text should be present");
+        assertTrue(
+                toolResultText.contains("missing function name"),
+                "Tool result should explain the malformed call, got: " + toolResultText);
+    }
+
+    @Test
     @DisplayName("Should execute multiple tools in acting phase")
     void testMultipleToolExecution() {
         // Use a mutable reference to track call count
