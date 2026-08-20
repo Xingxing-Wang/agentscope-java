@@ -464,6 +464,32 @@ class DashScopeHttpClientTest {
                         () -> client.call(request, null, null, null));
 
         assertTrue(exception.getMessage().contains("Invalid API key"));
+        assertEquals("error-request", exception.getRequestId());
+    }
+
+    @Test
+    void testStreamErrorCarriesRequestId() {
+        String sseResponse =
+                "data:"
+                    + " {\"request_id\":\"throttle-req-42\",\"code\":\"Throttling.AllocationQuota\",\"message\":\"Allocated"
+                    + " quota exceeded\"}\n\n"
+                    + "data: [DONE]\n\n";
+
+        mockServer.enqueue(
+                new MockResponse()
+                        .setResponseCode(200)
+                        .setBody(sseResponse)
+                        .setHeader("Content-Type", "text/event-stream"));
+
+        DashScopeRequest request = createTestRequest("qwen-plus", "Hi");
+
+        StepVerifier.create(client.stream(request, null, null, null))
+                .expectErrorMatches(
+                        t ->
+                                t instanceof DashScopeHttpClient.DashScopeHttpException ex
+                                        && "throttle-req-42".equals(ex.getRequestId())
+                                        && "Throttling.AllocationQuota".equals(ex.getErrorCode()))
+                .verify();
     }
 
     @Test

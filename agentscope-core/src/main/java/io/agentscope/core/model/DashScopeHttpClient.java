@@ -215,7 +215,8 @@ public class DashScopeHttpClient {
                 throw new DashScopeHttpException(
                         "DashScope API error: " + response.getMessage(),
                         response.getCode(),
-                        responseBody);
+                        responseBody,
+                        response.getRequestId());
             }
 
             return response;
@@ -296,7 +297,8 @@ public class DashScopeHttpClient {
                                             new DashScopeHttpException(
                                                     "DashScope API error: " + response.getMessage(),
                                                     response.getCode(),
-                                                    null));
+                                                    null,
+                                                    response.getRequestId()));
                                 } else {
                                     sink.next(response);
                                 }
@@ -836,12 +838,14 @@ public class DashScopeHttpClient {
         private final Integer statusCode;
         private final String errorCode;
         private final String responseBody;
+        private final String requestId;
 
         public DashScopeHttpException(String message) {
             super(message);
             this.statusCode = null;
             this.errorCode = null;
             this.responseBody = null;
+            this.requestId = null;
         }
 
         public DashScopeHttpException(String message, Throwable cause) {
@@ -849,6 +853,7 @@ public class DashScopeHttpClient {
             this.statusCode = null;
             this.errorCode = null;
             this.responseBody = null;
+            this.requestId = null;
         }
 
         public DashScopeHttpException(String message, int statusCode, String responseBody) {
@@ -856,6 +861,7 @@ public class DashScopeHttpClient {
             this.statusCode = statusCode;
             this.errorCode = null;
             this.responseBody = responseBody;
+            this.requestId = null;
         }
 
         public DashScopeHttpException(String message, String errorCode, String responseBody) {
@@ -863,6 +869,16 @@ public class DashScopeHttpClient {
             this.statusCode = null;
             this.errorCode = errorCode;
             this.responseBody = responseBody;
+            this.requestId = null;
+        }
+
+        public DashScopeHttpException(
+                String message, String errorCode, String responseBody, String requestId) {
+            super(message);
+            this.statusCode = null;
+            this.errorCode = errorCode;
+            this.responseBody = responseBody;
+            this.requestId = requestId;
         }
 
         public Integer getStatusCode() {
@@ -875,6 +891,15 @@ public class DashScopeHttpClient {
 
         public String getResponseBody() {
             return responseBody;
+        }
+
+        /**
+         * Returns the upstream DashScope request id when available.
+         *
+         * @return the DashScope request_id, or null if the error path did not carry one
+         */
+        public String getRequestId() {
+            return requestId;
         }
     }
 }
